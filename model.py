@@ -1,6 +1,8 @@
+from io import BytesIO
 from pathlib import Path
 import random
 
+import joblib
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from sklearn.metrics import accuracy_score, log_loss
@@ -10,6 +12,7 @@ IMG_SIZE = 28
 DATA_DIR = Path('data')
 TRAIN_DIR = DATA_DIR / 'train'
 TEST_DIR = DATA_DIR / 'test'
+MODEL_PATH = Path('digit_model.joblib')
 
 
 def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -92,9 +95,13 @@ def load_images(split_dir: Path) -> tuple[np.ndarray, np.ndarray]:
     return x, y
 
 
-def main() -> None:
+def train_model(
+    train_per_digit: int = 120,
+    test_per_digit: int = 30,
+    max_iter: int = 400,
+) -> tuple[MLPClassifier, dict[str, float]]:
     print('Generating images...')
-    generate_dataset(train_per_digit=120, test_per_digit=30)
+    generate_dataset(train_per_digit=train_per_digit, test_per_digit=test_per_digit)
 
     print('Loading images...')
     x_train, y_train = load_images(TRAIN_DIR)
@@ -106,7 +113,7 @@ def main() -> None:
         hidden_layer_sizes=(128,),
         activation='relu',
         solver='adam',
-        max_iter=400,
+        max_iter=max_iter,
         random_state=42,
     )
 
@@ -116,10 +123,42 @@ def main() -> None:
     y_pred = model.predict(x_test)
     y_proba = model.predict_proba(x_test)
 
-    accuracy = accuracy_score(y_test, y_pred)
-    loss = log_loss(y_test, y_proba)
+    metrics = {
+        'loss': float(log_loss(y_test, y_proba)),
+        'accuracy': float(accuracy_score(y_test, y_pred)),
+        'train_images': float(len(y_train)),
+        'test_images': float(len(y_test)),
+    }
+    return model, metrics
 
-    print(f'Loss: {loss:.4f}, Accuracy: {accuracy:.4f}')
+
+def save_model(model: MLPClassifier, model_path: Path = MODEL_PATH) -> None:
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model, model_path)
+
+
+def load_saved_model(model_path: Path = MODEL_PATH) -> MLPClassifier | None:
+    if model_path.exists():
+        return joblib.load(model_path)
+    return None
+
+
+def preprocess_uploaded_image(file_bytes: bytes) -> np.ndarray:
+    image = Image.open(BytesIO(file_bytes)).convert('L').resize((IMG_SIZE, IMG_SIZE))
+    arr = np.array(image, dtype=np.float32) / 255.0
+
+    # Auto-invert if image background is white.
+    if float(arr.mean()) > 0.5:
+        arr = 1.0 - arr
+
+    return arr.flatten().reshape(1, -1)
+
+
+def main() -> None:
+    model, metrics = train_model(train_per_digit=120, test_per_digit=30, max_iter=400)
+    save_model(model)
+    print(f"Loss: {metrics['loss']:.4f}, Accuracy: {metrics['accuracy']:.4f}")
+    print(f'Saved model: {MODEL_PATH}')
 
 
 if __name__ == '__main__':
